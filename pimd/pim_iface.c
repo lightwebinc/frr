@@ -53,6 +53,7 @@ static void pim_if_gm_join_del_all(struct interface *ifp);
 static void pim_if_static_group_del_all(struct interface *ifp);
 static void pim_if_gm_join_replay(struct interface *ifp);
 static void pim_if_static_group_replay(struct interface *ifp);
+static void pim_if_static_group_deactivate_all(struct interface *ifp);
 
 static int gm_join_sock(const char *ifname, ifindex_t ifindex,
 			pim_addr group_addr, pim_addr source_addr,
@@ -1136,6 +1137,14 @@ int pim_if_del_vif(struct interface *ifp)
 		zlog_debug("%s: vif_index=%d  on interface %s ifindex=%d", __func__,
 			   pim_ifp->mroute_vif_index, ifp->name, ifp->ifindex);
 
+	/*
+	 * The VIF, and with it every OIF on it, is going away.  Give up the
+	 * TIB state the static groups hold, otherwise static_group_activate()
+	 * keeps returning early on stgrp->oilp and pim_if_static_group_replay()
+	 * never picks the entries up again when a VIF comes back.
+	 */
+	pim_if_static_group_deactivate_all(ifp);
+
 	/* if the device was a pim_vxlan iif/oif update vxlan mroute entries */
 	pim_vxlan_del_vif(ifp);
 
@@ -1513,6 +1522,24 @@ static bool static_group_activate(struct interface *ifp, struct static_group *st
 	}
 
 	return true;
+}
+
+static void pim_if_static_group_deactivate_all(struct interface *ifp)
+{
+	struct pim_interface *pim_ifp = ifp->info;
+	struct listnode *node;
+	struct static_group *stgrp;
+
+	if (!pim_ifp || !pim_ifp->static_group_list)
+		return;
+
+	for (ALL_LIST_ELEMENTS_RO(pim_ifp->static_group_list, node, stgrp)) {
+		if (!stgrp->oilp)
+			continue;
+
+		pim_channel_oil_del(stgrp->oilp, __func__);
+		stgrp->oilp = NULL;
+	}
 }
 
 static void pim_if_static_group_replay(struct interface *ifp)
