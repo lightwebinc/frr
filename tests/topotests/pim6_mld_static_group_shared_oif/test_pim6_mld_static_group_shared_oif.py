@@ -107,11 +107,16 @@ def _oif_present():
     data = _json_cmd("r2", "show ipv6 mroute json")
     if data is None:
         return "r2: unparseable v6 mroute JSON (pim6d dead?)"
-    oil = data.get(GROUP6, {}).get(SOURCE6, {})
-    if not oil:
+    sg = data.get(GROUP6, {}).get(SOURCE6, {})
+    if not sg:
         return "r2 has no ({}, {}) mroute at all: {}".format(SOURCE6, GROUP6, data)
+    # The outgoing interfaces are a SUB-object under "oil", not keys of the (S,G)
+    # entry itself -- the entry's own keys are iif/flags/installed/refCount. Reading
+    # the entry directly finds no interface and reports a missing OIF on a perfectly
+    # good OIL.
+    oil = sg.get("oil", {})
     if OIF not in oil:
-        return "r2 ({}, {}) OIL is missing {}: {}".format(SOURCE6, GROUP6, OIF, oil)
+        return "r2 ({}, {}) OIL is missing {}: oil={}".format(SOURCE6, GROUP6, OIF, oil)
     return None
 
 
