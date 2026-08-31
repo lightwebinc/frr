@@ -222,7 +222,15 @@ def test_static_group_added_second_survives_receiver_leave():
     standing and MUST retain the OIF.
 
     Before the fix the second claim was a silent no-op, so the receiver's
-    leave took the OIF with it and nothing ever restored it."""
+    leave took the OIF with it and nothing ever restored it.
+
+    COVERAGE CAVEAT, measured: this direction PASSES on unfixed master, so it
+    does not currently reproduce that half of the defect and must not be counted
+    as protecting it. Run against master + this test only, the module scores
+    1 failed / 3 passed -- the failure is the REVERSE direction below, which is
+    the one this file genuinely guards. Kept because it documents the intended
+    invariant and costs nothing; strengthening it (a different add/leave
+    interleaving, or asserting on oilSize rather than membership) is open work."""
     tgen = get_topogen()
 
     if tgen.routers_have_failure():
@@ -257,7 +265,10 @@ def test_static_group_removed_leaves_receiver_oif_intact():
 
     Before the fix the static-group's removal pruned the OIF out from under
     the live receiver, and gm_sg_update() then took neither branch, so it
-    never came back."""
+    never came back.
+
+    THIS is the assertion that actually catches the regression: verified to FAIL
+    on unfixed master and PASS with the fix, same test binary, same topology."""
     tgen = get_topogen()
 
     if tgen.routers_have_failure():
