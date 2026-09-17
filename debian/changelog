@@ -1,3 +1,18 @@
+frr (10.7.1-lw1) unstable; urgency=medium
+
+  * Downstream build of FRR 10.7.1 carrying pimd fixes that are not in the
+    10.7.x line:
+    - pimd: report a successful IPv6 PIM send as success.  Merged upstream to
+      master only (e19992b3f6, FRRouting/frr#23269); not backported, so every
+      10.7.x node books each successful IPv6 PIM send as a failure.
+    - pimd: release static group TIB state when the VIF is deleted.
+    - pimd: keep a GM OIF the other subscriber on the interface still needs.
+      A static group and dynamic IGMP/MLD membership share one non-refcounted
+      PROTO_GM bit, so whichever leaves first tears down the other's OIF.
+  * Source: https://github.com/lightwebinc/frr, branch lightweb/10.7.
+
+ -- Jeff Harris <jeff@lightweb.net>  Thu, 17 Sep 2026 08:04:06 -0600
+
 frr (10.7.1-0) unstable; urgency=medium
 
   * New upstream release FRR 10.7.1
