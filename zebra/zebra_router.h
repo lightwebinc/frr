@@ -219,6 +219,15 @@ struct zebra_router {
 	struct event *t_rib_sweep;
 
 	/*
+	 * Bounded retry of FIB installs the dataplane rejected: retries
+	 * issued, installs that succeeded on a retry, and route entries
+	 * given up on once the retry budget was spent.
+	 */
+	uint64_t rib_install_retries;
+	uint64_t rib_install_retry_recovered;
+	uint64_t rib_install_retry_exhausted;
+
+	/*
 	 * The hash of nexthop groups associated with this router
 	 */
 	struct hash *nhgs;

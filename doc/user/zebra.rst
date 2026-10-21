@@ -1805,6 +1805,17 @@ zebra Terminal Mode Commands
    show various zebra state that is useful when debugging an operator's
    setup.
 
+   The ``Route Install Retry`` rows count zebra's retries of routes the
+   dataplane refused to install.  A selected route whose install fails is
+   retried up to 6 times, after 1, 2, 4, 8, 16 and 16 seconds, so a
+   transient refusal (for example a ``set src`` address that is briefly
+   absent while an interface is reconfigured) does not leave the route out
+   of the FIB.  ``Recovered`` counts routes that installed on a retry,
+   ``Exhausted`` counts routes left failed once every retry was spent, and
+   ``Pending`` is the number of retries currently scheduled.  A route that
+   is still failed after its retries keeps its ``r`` (rejected) marker in
+   ``show ip route`` until it changes.
+
 .. clicmd:: show zebra client [summary|json]
 
    Display statistics about clients that are connected to zebra.  This is

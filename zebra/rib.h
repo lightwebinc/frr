@@ -145,6 +145,8 @@ struct route_entry {
 #define ROUTE_ENTRY_INSTALLED        0x10
 /* Route has Failed installation into the Data Plane in some manner */
 #define ROUTE_ENTRY_FAILED           0x20
+/* A retry of the failed FIB install is scheduled for this route entry */
+#define ROUTE_ENTRY_INSTALL_RETRY    0x40
 /*
  * Route entries that are going to the dplane for a Route Replace
  * let's note the fact that this is happening.  This will
@@ -168,6 +170,9 @@ struct route_entry {
 
 	/* Distance. */
 	uint8_t distance;
+
+	/* FIB install retries spent since this entry last installed */
+	uint8_t install_retries;
 
 	/* Tag */
 	route_tag_t tag;
@@ -433,6 +438,7 @@ extern void rib_sweep_table(struct route_table *table);
 extern void rib_close_table(struct route_table *table);
 extern void zebra_rib_init(void);
 extern void zebra_rib_terminate(void);
+extern unsigned long zebra_rib_install_retry_pending(void);
 extern unsigned long rib_score_proto(uint8_t proto, unsigned short instance);
 extern unsigned long rib_score_proto_table(uint8_t proto,
 					   unsigned short instance,

@@ -569,6 +569,8 @@ static void vty_show_ip_route(struct vty *vty, struct route_node *rn, struct rou
 			json_object_boolean_false_add(json_route, "offloaded");
 		if (CHECK_FLAG(re->status, ROUTE_ENTRY_FAILED))
 			json_object_boolean_true_add(json_route, "failed");
+		if (re->install_retries)
+			json_object_int_add(json_route, "installRetries", re->install_retries);
 		if (CHECK_FLAG(re->status, ROUTE_ENTRY_SEND_NHT_REMOVAL))
 			json_object_boolean_true_add(json_route, "kernelRemoved");
 
@@ -3960,6 +3962,14 @@ DEFUN (show_zebra,
 		       zrouter.default_mc_forwardingv6 ? "On" : "Off");
 	ttable_add_row(table, "Backup Nexthops Installed|%s",
 		       zrouter.backup_nhs_installed ? "Yes" : "No");
+	ttable_add_row(table, "Route Install Retries|%" PRIu64,
+		       zrouter.rib_install_retries);
+	ttable_add_row(table, "Route Install Retry Recovered|%" PRIu64,
+		       zrouter.rib_install_retry_recovered);
+	ttable_add_row(table, "Route Install Retry Exhausted|%" PRIu64,
+		       zrouter.rib_install_retry_exhausted);
+	ttable_add_row(table, "Route Install Retry Pending|%lu",
+		       zebra_rib_install_retry_pending());
 
 	out = ttable_dump(table, "\n");
 	vty_out(vty, "%s\n", out);
