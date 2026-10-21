@@ -1,3 +1,17 @@
+frr (10.7.1-lw2) unstable; urgency=medium
+
+  * zebra: retry a FIB install the dataplane refused.  A failed install was
+    never retried, so a transient refusal stranded the route until its owner
+    withdrew and re-sent it.  On Linux a route-map "set src" whose address is
+    briefly absent during an interface reconfiguration ("Invalid source
+    address") stranded every route reinstalled in that window.  Up to 6
+    retries per route entry, 1s doubling to 16s, then the route is left
+    failed; counted in "show zebra" (Route Install Retry rows).
+  * Carries the pimd fixes of 10.7.1-lw1 unchanged.
+  * Source: https://github.com/lightwebinc/frr, branch lightweb/10.7.
+
+ -- Jeff Harris <jeff@lightweb.net>  Wed, 21 Oct 2026 08:04:51 -0600
+
 frr (10.7.1-lw1) unstable; urgency=medium
 
   * Downstream build of FRR 10.7.1 carrying pimd fixes that are not in the
