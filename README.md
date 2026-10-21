@@ -1,5 +1,5 @@
-> **Downstream fork (lightwebinc).** Branch `lightweb/10.7` is upstream `frr-10.7.1` plus pimd patches
-> carried for IPv6 multicast deployments. Current release: `10.7.1-lw1`.
+> **Downstream fork (lightwebinc).** Branch `lightweb/10.7` is upstream `frr-10.7.1` plus pimd and
+> zebra patches carried for IPv6 multicast deployments. Current release: `10.7.1-lw2`.
 > Packages and notes: [releases](https://github.com/lightwebinc/frr/releases).
 > Upstream project: [FRRouting/frr](https://github.com/FRRouting/frr).
 > Everything below is the unmodified upstream README.
