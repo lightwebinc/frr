@@ -1237,8 +1237,9 @@ static void add_mac_mobility_to_attr(uint32_t seq_num, struct attr *attr)
 	int sub_type = 0;
 	struct ecommunity *ecomm = bgp_attr_get_ecommunity(attr);
 
-	/* Build MM */
-	encode_mac_mobility_extcomm(0, seq_num, &eval);
+	/* MM carries the sticky flag and the seq in one community (RFC 7432 7.7) */
+	encode_mac_mobility_extcomm(!!CHECK_FLAG(attr->evpn_flags, ATTR_EVPN_FLAG_STICKY), seq_num,
+				    &eval);
 
 	/* Find current MM ecommunity */
 	ecom_val_ptr = NULL;
@@ -3132,6 +3133,8 @@ bgp_create_evpn_bgp_path_info(struct bgp_path_info *parent_pi,
 	if (BGP_PATH_INFO_NUM_LABELS(parent_pi))
 		pi->extra->labels = bgp_labels_intern(parent_pi->extra->labels);
 
+	bgp_path_info_extra_propagate(pi, parent_pi);
+
 	bgp_path_info_add(dest, pi);
 
 	return pi;
@@ -3273,7 +3276,8 @@ static int install_evpn_route_entry_in_vrf(struct bgp *bgp_vrf,
 		pi = bgp_create_evpn_bgp_path_info(parent_pi, dest, &attr);
 		new_pi = true;
 	} else {
-		if (!CHECK_FLAG(pi->flags, BGP_PATH_REMOVED) && attrhash_cmp(pi->attr, &attr)) {
+		if (!CHECK_FLAG(pi->flags, BGP_PATH_REMOVED) && attrhash_cmp(pi->attr, &attr) &&
+		    bgp_path_info_extra_same(pi, parent_pi)) {
 			bgp_dest_unlock_node(dest);
 			bgp_attr_extra_discard(&attr);
 			return 0;
@@ -3305,6 +3309,7 @@ static int install_evpn_route_entry_in_vrf(struct bgp *bgp_vrf,
 		bgp_attr_unintern(&pi->attr);
 		pi->attr = attr_new;
 		pi->uptime = monotime(NULL);
+		bgp_path_info_extra_propagate(pi, parent_pi);
 	}
 
 	bgp_dest_set_defer_flag(dest, false);
@@ -6513,8 +6518,14 @@ void bgp_evpn_encode_prefix(struct stream *s, const struct prefix *p,
 	}
 }
 
-int bgp_nlri_parse_evpn(struct peer *peer, struct attr *attr,
-			struct bgp_nlri *packet, bool withdraw)
+/*
+ * Walks the EVPN NLRIs in the MP_REACH/MP_UNREACH attribute from "packet"
+ * and hands each route (type 1-5) to its per-type processor, which runs
+ * bgp_update() / bgp_withdraw() against the shared parent attr.
+ * Returns BGP_NLRI_PARSE_OK or an error code on malformed input.
+ */
+static int _bgp_nlri_parse_evpn_internal(struct peer *peer, struct attr *attr,
+					 const struct bgp_nlri *packet, bool withdraw)
 {
 	uint8_t *pnt;
 	uint8_t *lim;
@@ -6632,6 +6643,42 @@ int bgp_nlri_parse_evpn(struct peer *peer, struct attr *attr,
 		return BGP_NLRI_PARSE_ERROR_PACKET_LENGTH;
 
 	return BGP_NLRI_PARSE_OK;
+}
+
+/*
+ * Wrapper function for _bgp_nlri_parse_evpn_internal().
+ * Walks the EVPN NLRIs in the MP_REACH/MP_UNREACH attribute from "packet"
+ * and hands each route (type 1-5) to its per-type processor.
+ * Anchors the parent attr for the duration of the parse (see below),
+ * then delegates to _bgp_nlri_parse_evpn_internal().
+ * Without the anchor, the first bgp_attr_intern() of the parent attr
+ * (e.g. via bgp_adj_in_set() with soft-reconfiguration inbound) would
+ * see bgp_attr_owns_extra() true and strip attr->extra, losing the
+ * PMSI tunnel attribute for the routes processed after it.
+ */
+int bgp_nlri_parse_evpn(struct peer *peer, struct attr *attr, const struct bgp_nlri *packet,
+			bool withdraw)
+{
+	int ret;
+
+	/* Self-anchor the parsed parent attr so bgp_attr_owns_extra() does
+	 * not treat it as transient and steal or discard attr->extra (which
+	 * carries pmsi_tnl_type/tunn_id) on the first intern, the NLRI loop
+	 * passes this attr to bgp_update() once per prefix. Mirrors
+	 * bgp_nlri_parse_ip()/bgp_nlri_parse_vpn().
+	 */
+	if (attr) {
+		memset(&attr->attr_intern_reuse, 0, sizeof(attr->attr_intern_reuse));
+		attr->attr_intern_reuse.parsed_attr = attr;
+	}
+
+	ret = _bgp_nlri_parse_evpn_internal(peer, attr, packet, withdraw);
+
+	/* Reset the attr_intern_reuse cache */
+	if (attr)
+		memset(&attr->attr_intern_reuse, 0, sizeof(attr->attr_intern_reuse));
+
+	return ret;
 }
 
 /*

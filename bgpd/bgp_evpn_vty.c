@@ -2721,7 +2721,7 @@ static void evpn_show_route_vni_macip(struct vty *vty, struct bgp *bgp,
 	 * MAC is per-path, we have to walk the path_info's and look for it
 	 * first here.
 	 */
-	if (ip && mac) {
+	if (ip && !IS_IPADDR_NONE(ip) && mac) {
 		for (pi = bgp_dest_get_bgp_path_info(dest); pi; pi = pi->next) {
 			if (memcmp(mac, evpn_type2_path_info_get_mac(pi),
 				   sizeof(*mac)) == 0)
@@ -2749,9 +2749,8 @@ static void evpn_show_route_vni_macip(struct vty *vty, struct bgp *bgp,
 		json_object *json_path = NULL;
 
 		/* skip non-matching MACs */
-		if (ip && mac &&
-		    memcmp(mac, evpn_type2_path_info_get_mac(pi),
-			   sizeof(*mac)) != 0)
+		if (ip && !IS_IPADDR_NONE(ip) && mac &&
+		    memcmp(mac, evpn_type2_path_info_get_mac(pi), sizeof(*mac)) != 0)
 			continue;
 
 		if (json)
@@ -5680,10 +5679,8 @@ DEFPY(show_bgp_l2vpn_evpn_route_vni_all,
 
 	evpn_show_routes_vni_all(vty, bgp, 0, false, vtep_ip, json, da);
 
-	if (uj) {
+	if (uj)
 		vty_json(vty, json);
-		json_object_free(json);
-	}
 
 	return CMD_SUCCESS;
 }
@@ -6588,7 +6585,7 @@ DEFUN (no_bgp_evpn_vni,
 	return CMD_SUCCESS;
 }
 
-DEFUN_NOSH (exit_vni,
+DEFUN_YANG_NOSH (exit_vni,
             exit_vni_cmd,
             "exit-vni",
             "Exit from VNI mode\n")
@@ -6852,7 +6849,7 @@ DEFUN (show_bgp_vrf_l3vni_info,
 		json = json_object_new_object();
 
 	name = argv[idx_vrf]->arg;
-	bgp = bgp_lookup_by_name(name);
+	bgp = bgp_lookup_by_name_filter(name, false);
 	if (strmatch(name, VRF_DEFAULT_NAME))
 		bgp = bgp_get_default();
 

@@ -1330,8 +1330,8 @@ int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 	/* 3.5. Tie-breaker - AIGP (Metric TLV) attribute */
 	if (bgp_attr_exists(newattr, BGP_ATTR_AIGP) && bgp_attr_exists(existattr, BGP_ATTR_AIGP) &&
 	    CHECK_FLAG(bgp->flags, BGP_FLAG_COMPARE_AIGP)) {
-		uint64_t new_aigp = bgp_aigp_metric_total(new);
-		uint64_t exist_aigp = bgp_aigp_metric_total(exist);
+		uint64_t new_aigp = bgp_aigp_metric_total(new, new->attr);
+		uint64_t exist_aigp = bgp_aigp_metric_total(exist, exist->attr);
 
 		if (new_aigp < exist_aigp) {
 			*reason = bgp_path_selection_aigp;
@@ -3180,7 +3180,7 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 		if (AIGP_TRANSMIT_ALLOWED(peer)) {
 			if (nh_reset ||
 			    CHECK_FLAG(attr->rmap_change_flags, BATTR_RMAP_NEXTHOP_PEER_ADDRESS)) {
-				uint64_t aigp = bgp_aigp_metric_total(pi);
+				uint64_t aigp = bgp_aigp_metric_total(pi, attr);
 
 				bgp_attr_set_aigp_metric(attr, aigp);
 			}
@@ -5856,10 +5856,17 @@ void bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 			 * `set` actions in the route-map do not leak into the
 			 * downstream inbound processing.
 			 */
-			struct attr local_attr = *attr;
+			struct attr local_attr;
 			struct bgp_path_info rmap_path;
 			struct bgp_path_info_extra allowas_extra;
 			route_map_result_t rmap_ret;
+
+			/*
+			 * A plain struct copy would share attr->extra with the
+			 * parsed attr, and the flush below would then free it
+			 * from under every later user of attr.
+			 */
+			bgp_attr_dup_into(&local_attr, attr);
 
 			prep_for_rmap_apply(&rmap_path, &allowas_extra, dest, NULL, peer, NULL,
 					    &local_attr);
@@ -5884,9 +5891,9 @@ void bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 
 			/* Always flush; the route-map is for matching only and
 			 * we never carry forward any of its `set` modifications.
+			 * This also frees local_attr's own copy of extra.
 			 */
 			bgp_attr_flush(&local_attr);
-			bgp_attr_extra_discard(&local_attr);
 
 			if (rmap_ret == RMAP_PERMITMATCH)
 				allowas_in_apply = true;
@@ -6576,8 +6583,10 @@ void bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	new = info_make(type, sub_type, 0, peer, attr_new, dest);
 
 	/* Update MPLS label */
-	bgp_path_info_extra_get(new);
-	new->extra->labels = bgp_labels_intern(&bgp_labels);
+	if (bgp_labels.num_labels) {
+		bgp_path_info_extra_get(new);
+		new->extra->labels = bgp_labels_intern(&bgp_labels);
+	}
 
 	/* Propagate fields written to the rmap-transient extra
 	 * (e.g. "set sr-te color") onto the real path.
@@ -7815,6 +7824,10 @@ static int clear_batch_rib_helper(struct bgp_clearing_info *cinfo)
 			} else {
 				/* Process "inner" table for these SAFIs */
 				outer_table = cinfo->bgp->rib[afi][safi];
+				if (!outer_table) {
+					UNSET_FLAG(cinfo->flags, BGP_CLEARING_INFO_FLAG_RESUME);
+					continue;
+				}
 
 				/* Begin or resume iteration in "outer" table */
 				dest = clearing_dest_helper(outer_table, cinfo, false);
@@ -10476,6 +10489,12 @@ static int bgp_aggregate_unset(struct vty *vty, const char *prefix_str,
 	}
 
 	aggregate = bgp_dest_get_bgp_aggregate_info(dest);
+	if (!aggregate) {
+		vty_out(vty, "%% There is no aggregate-address configuration.\n");
+		bgp_dest_unlock_node(dest);
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
 	bgp_aggregate_delete(bgp, &p, afi, safi, aggregate);
 
 	/*
@@ -17548,6 +17567,7 @@ static int peer_adj_routes(struct vty *vty, struct peer *peer, afi_t afi, safi_t
 				continue;
 
 			output_count_per_rd = 0;
+			paths_count_per_rd = 0;
 			filtered_count_per_rd = 0;
 
 			if (use_json)
@@ -18585,7 +18605,7 @@ static int bgp_clear_damp_route(struct vty *vty, const char *view_name,
 			if (rm == NULL)
 				continue;
 
-			const struct prefix *rm_p = bgp_dest_get_prefix(dest);
+			const struct prefix *rm_p = bgp_dest_get_prefix(rm);
 
 			if (!prefix_check
 			    || rm_p->prefixlen == match.prefixlen) {
@@ -18610,7 +18630,7 @@ static int bgp_clear_damp_route(struct vty *vty, const char *view_name,
 
 		const struct prefix *dest_p = bgp_dest_get_prefix(dest);
 
-		if (prefix_check || dest_p->prefixlen != match.prefixlen)
+		if (prefix_check && dest_p->prefixlen != match.prefixlen)
 			return CMD_SUCCESS;
 
 		pi = bgp_dest_get_bgp_path_info(dest);
@@ -18623,8 +18643,10 @@ static int bgp_clear_damp_route(struct vty *vty, const char *view_name,
 			pi_temp = pi->next;
 			struct bgp_damp_info *bdi = pi->extra->damp_info;
 
-			if (bdi->lastrecord != BGP_RECORD_UPDATE)
+			if (bdi->lastrecord != BGP_RECORD_UPDATE) {
+				pi = pi_temp;
 				continue;
+			}
 
 			bgp_aggregate_increment(bgp,
 						bgp_dest_get_prefix(bdi->dest),
@@ -18706,8 +18728,7 @@ DEFUN (clear_ip_bgp_dampening_address_mask,
 		return CMD_WARNING;
 	}
 
-	return bgp_clear_damp_route(vty, NULL, prefix_str, AFI_IP, SAFI_UNICAST,
-				    NULL, 0);
+	return bgp_clear_damp_route(vty, NULL, prefix_str, AFI_IP, SAFI_UNICAST, NULL, 1);
 }
 
 static void show_bgp_connectionhash_entry(struct hash_bucket *bucket, void *arg)

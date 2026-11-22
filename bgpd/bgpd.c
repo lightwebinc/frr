@@ -2520,8 +2520,11 @@ static void peer_group2peer_config_copy_af(struct peer_group *group,
 		PEER_ATTR_INHERIT(peer, group, allowas_in[afi][safi]);
 
 	/* soo */
-	if (!CHECK_FLAG(pflags_ovrd, PEER_FLAG_SOO))
-		PEER_ATTR_INHERIT(peer, group, soo[afi][safi]);
+	if (!CHECK_FLAG(pflags_ovrd, PEER_FLAG_SOO)) {
+		ecommunity_free(&peer->soo[afi][safi]);
+		if (group->conf->soo[afi][safi])
+			peer->soo[afi][safi] = ecommunity_dup(group->conf->soo[afi][safi]);
+	}
 
 	/* weight */
 	if (!CHECK_FLAG(pflags_ovrd, PEER_FLAG_WEIGHT))
@@ -3794,7 +3797,6 @@ static struct bgp *bgp_create(as_t *as, const char *name,
 	bgp_lock(bgp);
 
 	bgp->allow_martian = false;
-	bgp_process_queue_init(bgp);
 	bgp->heuristic_coalesce = true;
 	bgp->inst_type = inst_type;
 	bgp->vrf_id = (inst_type == BGP_INSTANCE_TYPE_DEFAULT) ? VRF_DEFAULT
@@ -3937,6 +3939,10 @@ peer_init:
 				: "VIEW",
 			n);
 	}
+
+	/* The process queue is named after name_pretty */
+	if (!hidden)
+		bgp_process_queue_init(bgp);
 
 	atomic_store_explicit(&bgp->wpkt_quanta, BGP_WRITE_PACKET_MAX,
 			      memory_order_relaxed);
@@ -9555,13 +9561,37 @@ void bgp_terminate(void)
 #endif
 }
 
+/*
+ * First member of peer-group @name. A NULL @bgp means "vrf all": search every
+ * instance, as the other peer lookups do, and skip groups that have no members
+ * so that an empty group of the same name does not hide a populated one.
+ */
+static struct peer *peer_group_lookup_member(struct bgp *bgp, const char *name)
+{
+	struct peer_group *group;
+	struct listnode *node;
+	struct peer *peer;
+
+	if (bgp) {
+		group = peer_group_lookup(bgp, name);
+		return group ? listnode_head(group->peer) : NULL;
+	}
+
+	for (ALL_LIST_ELEMENTS_RO(bm->bgp, node, bgp)) {
+		peer = peer_group_lookup_member(bgp, name);
+		if (peer)
+			return peer;
+	}
+
+	return NULL;
+}
+
 struct peer *peer_lookup_in_view(struct vty *vty, struct bgp *bgp,
 				 const char *ip_str, bool use_json)
 {
 	int ret;
 	struct peer *peer;
 	union sockunion su;
-	struct peer_group *group;
 
 	/* Get peer sockunion. */
 	ret = str2sockunion(ip_str, &su);
@@ -9570,11 +9600,8 @@ struct peer *peer_lookup_in_view(struct vty *vty, struct bgp *bgp,
 		if (!peer) {
 			peer = peer_lookup_by_hostname(bgp, ip_str);
 
-			if (!peer) {
-				group = peer_group_lookup(bgp, ip_str);
-				if (group)
-					peer = listnode_head(group->peer);
-			}
+			if (!peer)
+				peer = peer_group_lookup_member(bgp, ip_str);
 
 			if (!peer) {
 				if (use_json) {
@@ -9802,7 +9829,7 @@ void bgp_clearing_batch_completed(struct bgp_clearing_info *cinfo)
 			   cinfo->total_counter);
 
 	/* Ensure event is not scheduled */
-	event_cancel_event(bm->master, &cinfo->t_sched);
+	event_cancel(&cinfo->t_sched);
 
 	/* Remove all peers and un-ref */
 	while ((peer = bgp_clearing_hash_pop_all(&cinfo->peers, &idx)) != NULL)
