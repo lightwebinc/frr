@@ -390,6 +390,8 @@ static void bgp_srv6_sids_unset(struct bgp *bgp)
 								 .tovpn_sid_locator->name);
 			/* refresh vpnv4 tovpn_sid */
 			XFREE(MTYPE_BGP_SRV6_SID, bgp_vrf->vpn_policy[AFI_IP].tovpn_sid);
+			UNSET_FLAG(bgp_vrf->vpn_policy[AFI_IP].flags,
+				   BGP_VPN_POLICY_TOVPN_SID_FUNC_WIDE);
 		}
 
 		if (bgp_vrf->vpn_policy[AFI_IP6].tovpn_sid) {
@@ -399,6 +401,8 @@ static void bgp_srv6_sids_unset(struct bgp *bgp)
 								 .tovpn_sid_locator->name);
 			/* refresh vpnv6 tovpn_sid */
 			XFREE(MTYPE_BGP_SRV6_SID, bgp_vrf->vpn_policy[AFI_IP6].tovpn_sid);
+			UNSET_FLAG(bgp_vrf->vpn_policy[AFI_IP6].flags,
+				   BGP_VPN_POLICY_TOVPN_SID_FUNC_WIDE);
 		}
 
 		if (bgp_vrf->tovpn_sid) {
@@ -407,6 +411,7 @@ static void bgp_srv6_sids_unset(struct bgp *bgp)
 			bgp_zebra_release_srv6_sid(&ctx, bgp_vrf->tovpn_sid_locator->name);
 			/* refresh per-vrf tovpn_sid */
 			XFREE(MTYPE_BGP_SRV6_SID, bgp_vrf->tovpn_sid);
+			UNSET_FLAG(bgp_vrf->vrf_flags, BGP_VRF_TOVPN_SID_FUNC_WIDE);
 		}
 
 		/* refresh vpnv4 tovpn_sid_locator */
@@ -2844,7 +2849,7 @@ DEFPY (bgp_use_underlying_nexthop_weight,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	if (no)
-		UNSET_FLAG(bgp->flags, BGP_WECMP_BEHAVIOR_USE_RECURSIVE_VALUE);
+		UNSET_FLAG(bgp->flags, BGP_FLAG_USE_RECURSIVE_WEIGHT);
 	else
 		SET_FLAG(bgp->flags, BGP_FLAG_USE_RECURSIVE_WEIGHT);
 
@@ -2951,7 +2956,8 @@ static void bgp_config_write_maxpaths(struct vty *vty, struct bgp *bgp,
 			bgp->maxpaths[afi][safi].maxpaths_ebgp);
 	}
 
-	if (bgp->maxpaths[afi][safi].maxpaths_ibgp != multipath_num) {
+	if (bgp->maxpaths[afi][safi].maxpaths_ibgp != multipath_num ||
+	    bgp->maxpaths[afi][safi].same_clusterlen) {
 		vty_out(vty, "  maximum-paths ibgp %d",
 			bgp->maxpaths[afi][safi].maxpaths_ibgp);
 		if (bgp->maxpaths[afi][safi].same_clusterlen)
@@ -9049,9 +9055,9 @@ DEFPY (bgp_condadv_period,
 		for (ALL_LIST_ELEMENTS(bgp->peer, node, nnode, peer))
 			UNSET_FLAG(peer->sflags, PEER_STATUS_COND_ADV_PENDING);
 
-		bgp->condition_check_period = DEFAULT_CONDITIONAL_ROUTES_POLL_TIME;
+		bgp_conditional_adv_period_set(bgp, DEFAULT_CONDITIONAL_ROUTES_POLL_TIME);
 	} else {
-		bgp->condition_check_period = period;
+		bgp_conditional_adv_period_set(bgp, period);
 	}
 
 	return CMD_SUCCESS;
@@ -11874,8 +11880,10 @@ DEFPY (bgp_srv6_locator,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	int ret;
 
-	if (strlen(bgp->srv6_locator_name) > 0
-	    && strcmp(name, bgp->srv6_locator_name) != 0) {
+	if (strlen(bgp->srv6_locator_name) > 0) {
+		if (strcmp(name, bgp->srv6_locator_name) == 0)
+			return CMD_SUCCESS;
+
 		vty_out(vty, "srv6 locator is already configured\n");
 		return CMD_WARNING_CONFIG_FAILED;
 	}
@@ -11994,7 +12002,7 @@ DEFPY (show_bgp_srv6,
 	return CMD_SUCCESS;
 }
 
-DEFUN_NOSH (exit_address_family,
+DEFUN_YANG_NOSH (exit_address_family,
        exit_address_family_cmd,
        "exit-address-family",
        "Exit from Address Family configuration mode\n")
@@ -12749,7 +12757,8 @@ static void print_bgp_vrfs(struct bgp *bgp, struct vty *vty, json_object *json,
 			if (bgp->maxpaths[afi][safi].maxpaths_ebgp != multipath_num)
 				json_object_int_add(json_addr, "ebgpMaximumPaths",
 						    bgp->maxpaths[afi][safi].maxpaths_ebgp);
-			if (bgp->maxpaths[afi][safi].maxpaths_ibgp != multipath_num) {
+			if (bgp->maxpaths[afi][safi].maxpaths_ibgp != multipath_num ||
+			    bgp->maxpaths[afi][safi].same_clusterlen) {
 				json_object_int_add(json_addr, "ibgpMaximumPaths",
 						    bgp->maxpaths[afi][safi].maxpaths_ibgp);
 				json_object_boolean_add(json_addr, "equalClusterLength",
@@ -12997,7 +13006,8 @@ static int show_bgp_vrfs_detail_common(struct vty *vty, struct bgp *bgp,
 					vty_out(vty, "   EBGP Maximumpaths %d\n",
 						bgp->maxpaths[afi][safi].maxpaths_ebgp);
 				}
-				if (bgp->maxpaths[afi][safi].maxpaths_ibgp != multipath_num) {
+				if (bgp->maxpaths[afi][safi].maxpaths_ibgp != multipath_num ||
+				    bgp->maxpaths[afi][safi].same_clusterlen) {
 					vty_out(vty, "   IBGP Maximumpaths %d\n",
 						bgp->maxpaths[afi][safi].maxpaths_ibgp);
 					if (bgp->maxpaths[afi][safi].same_clusterlen)
@@ -22451,7 +22461,7 @@ int bgp_config_write(struct vty *vty)
 		if (bgp->allow_martian)
 			vty_out(vty, " bgp allow-martian-nexthop\n");
 
-		if (CHECK_FLAG(bgp->flags, BGP_WECMP_BEHAVIOR_USE_RECURSIVE_VALUE))
+		if (CHECK_FLAG(bgp->flags, BGP_FLAG_USE_RECURSIVE_WEIGHT))
 			vty_out(vty, " use-underlays-nexthop-weight\n");
 
 		if (bgp->fast_convergence)
@@ -24818,7 +24828,7 @@ ALIAS(no_community_list_standard_all, no_bgp_community_list_standard_all_list_cm
 /*community-list expanded */
 DEFUN (community_list_expanded_all,
        bgp_community_list_expanded_all_cmd,
-       "bgp community-list <(100-500)|expanded COMMUNITY_LIST_NAME> [seq (0-4294967295)] <deny|permit> AA:NN...",
+       "bgp community-list <(100-500)|expanded COMMUNITY_LIST_NAME> [seq (0-4294967295)] <deny|permit> LINE...",
        BGP_STR
        COMMUNITY_LIST_STR
        "Community list number (expanded)\n"
@@ -24828,7 +24838,7 @@ DEFUN (community_list_expanded_all,
        "Sequence number\n"
        "Specify community to reject\n"
        "Specify community to accept\n"
-       COMMUNITY_VAL_STR)
+       "An ordered list as a regular-expression\n")
 {
 	char *cl_name_or_number = NULL;
 	char *seq = NULL;
@@ -24846,7 +24856,7 @@ DEFUN (community_list_expanded_all,
 	cl_name_or_number = argv[idx]->arg;
 	direct = argv_find(argv, argc, "permit", &idx) ? COMMUNITY_PERMIT
 						       : COMMUNITY_DENY;
-	argv_find(argv, argc, "AA:NN", &idx);
+	argv_find(argv, argc, "LINE", &idx);
 	char *str = argv_concat(argv, argc, idx);
 
 	assert(str);
@@ -24866,7 +24876,7 @@ DEFUN (community_list_expanded_all,
 
 DEFUN (no_community_list_expanded_all,
        no_bgp_community_list_expanded_all_cmd,
-       "no bgp community-list <(100-500)|expanded COMMUNITY_LIST_NAME> [seq (0-4294967295)] <deny|permit> AA:NN...",
+       "no bgp community-list <(100-500)|expanded COMMUNITY_LIST_NAME> [seq (0-4294967295)] <deny|permit> LINE...",
        NO_STR
        BGP_STR
        COMMUNITY_LIST_STR
@@ -24877,7 +24887,7 @@ DEFUN (no_community_list_expanded_all,
        "Sequence number\n"
        "Specify community to reject\n"
        "Specify community to accept\n"
-       COMMUNITY_VAL_STR)
+       "An ordered list as a regular-expression\n")
 {
 	char *cl_name_or_number = NULL;
 	char *seq = NULL;
@@ -24899,7 +24909,7 @@ DEFUN (no_community_list_expanded_all,
 				 : COMMUNITY_DENY;
 
 		idx = 0;
-		argv_find(argv, argc, "AA:NN", &idx);
+		argv_find(argv, argc, "LINE", &idx);
 		str = argv_concat(argv, argc, idx);
 	}
 

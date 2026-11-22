@@ -948,6 +948,15 @@ void bgp_start_tier2_deferral_timer(struct bgp *bgp, afi_t afi, safi_t safi)
 	event_add_timer(bm->master, bgp_graceful_deferral_timer_expire, thread_info,
 			bgp->select_defer_time, &gr_info->t_select_deferral_tier2);
 
+	/*
+	 * This stage is open again. A previous cycle can leave
+	 * select_defer_over_tier2 set, which makes
+	 * BGP_GR_SELECT_DEFER_DONE() true as soon as directly connected
+	 * peers finish and sends UPDATE_COMPLETE before the multihop
+	 * End-of-RIB.
+	 */
+	gr_info->select_defer_over_tier2 = false;
+	gr_info->route_sync_tier2 = false;
 	gr_info->select_defer_tier2_required = true;
 
 	if (BGP_DEBUG(graceful_restart, GRACEFUL_RESTART))
@@ -1823,6 +1832,32 @@ static void bgp_start_deferral_timer(struct bgp *bgp, afi_t afi, safi_t safi,
 				     struct graceful_restart_info *gr_info)
 {
 	struct afi_safi_info *thread_info;
+
+	/*
+	 * Arming this timer opens a selection-deferral cycle. The first
+	 * cycle leaves select_defer_over set, so a later End-of-RIB skips
+	 * bgp_gr_check_path_select() and routes stay unsorted until this
+	 * timer expires. route_sync* must be cleared too, or zebra never
+	 * gets the matching UPDATE_COMPLETE.
+	 *
+	 * A previous cycle can also leave the tier-2 timer running, with
+	 * select_defer_over_tier2 and select_defer_tier2_required still
+	 * set. That callback carries no cycle id, so it would mark this
+	 * cycle complete and zebra would get UPDATE_COMPLETE before the
+	 * new multihop End-of-RIB. Cancel the timer and drop its flags.
+	 */
+	if (event_is_scheduled(gr_info->t_select_deferral_tier2)) {
+		void *info = EVENT_ARG(gr_info->t_select_deferral_tier2);
+
+		XFREE(MTYPE_TMP, info);
+	}
+	event_cancel(&gr_info->t_select_deferral_tier2);
+
+	gr_info->select_defer_over = false;
+	gr_info->select_defer_over_tier2 = false;
+	gr_info->select_defer_tier2_required = false;
+	gr_info->route_sync = false;
+	gr_info->route_sync_tier2 = false;
 
 	/* Start the timer */
 	thread_info = XMALLOC(MTYPE_TMP, sizeof(struct afi_safi_info));
@@ -2718,7 +2753,10 @@ static enum bgp_fsm_state_progress bgp_start(struct peer_connection *connection)
 				   peer->host, connection->fd,
 				   bgp_peer_get_connection_direction_string(connection));
 
-		BGP_EVENT_ADD(connection, TCP_connection_open);
+		if (CHECK_FLAG(peer->flags, PEER_FLAG_TIMER_DELAYOPEN))
+			BGP_EVENT_ADD(connection, TCP_connection_open_w_delay);
+		else
+			BGP_EVENT_ADD(connection, TCP_connection_open);
 		break;
 	case connect_in_progress:
 		/* To check nonblocking connect, we wait until socket is
@@ -3817,5 +3855,15 @@ void bgp_event_stop_with_notify(struct event *event)
 {
 	struct peer_connection *connection = EVENT_ARG(event);
 
-	bgp_stop_with_notify(connection, BGP_NOTIFY_SEND_HOLD_ERR, 0);
+	/*
+	 * Drive the teardown through the FSM rather than stopping the peer
+	 * inline.  bgp_notify_send() -> bgp_write_notify() queues a BGP_Stop
+	 * (or TCP_fatal_error, if the stuck send queue rejects the write); the
+	 * FSM then advances the state and re-arms the ConnectRetry timer like
+	 * every other stop.  Calling bgp_stop() directly here (as
+	 * bgp_stop_with_notify() does) runs event_cancel_event_ready(), which
+	 * cancels that queued event, so the state is never advanced and the peer
+	 * is left stuck in Established with fd == -1 -- a zombie session.
+	 */
+	bgp_notify_send(connection, BGP_NOTIFY_SEND_HOLD_ERR, 0);
 }

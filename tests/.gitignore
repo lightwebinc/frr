@@ -47,6 +47,7 @@ frr_northbound*
 /lib/test_plist
 /lib/test_prefix2str
 /lib/test_printfrr
+/lib/test_ptm_lib
 /lib/test_privs
 /lib/test_resolver
 /lib/test_ringbuf
@@ -56,6 +57,7 @@ frr_northbound*
 /lib/test_skiplist
 /lib/test_srcdest_table
 /lib/test_stream
+/lib/test_stream_expand
 /lib/test_table
 /lib/test_timer_correctness
 /lib/test_timer_performance
